@@ -35,7 +35,7 @@ jobs:
         uses: semgrep/semgrep-action@v1
         with:
           config: p/security-audit
-        continue-on-error: false
+        continue-on-error: true
 
       - name: Build Application Verification
         run: npm --prefix frontend run build

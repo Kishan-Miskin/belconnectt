@@ -5,9 +5,11 @@ import { motion } from "framer-motion";
 import { ArrowRight, Mail, User, Phone, Briefcase, MapPin, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { useState, Suspense } from "react";
+import { useRouter } from "next/navigation";
 import { GoogleButton } from "@/components/auth/GoogleButton";
 
 export default function ProviderRegisterPage() {
+  const router = useRouter();
   const [step, setStep] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
   const [mobile, setMobile] = useState("");
@@ -29,7 +31,7 @@ export default function ProviderRegisterPage() {
     // Simulate verification
     setTimeout(() => {
       setIsLoading(false);
-      window.location.href = "/provider";
+      router.push("/provider");
     }, 1500);
   };
 
