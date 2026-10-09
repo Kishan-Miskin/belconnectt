@@ -8,7 +8,6 @@ import {
   Briefcase,
   MapPin,
   Clock,
-  IndianRupee,
   Building2,
   Calendar,
   Users,
@@ -22,8 +21,12 @@ import {
   ShieldCheck,
   X,
   FileText,
+  Mail,
+  Upload,
+  Loader2,
 } from "lucide-react";
 import { useAuthStore } from "@/store/useAuthStore";
+import { getAuthToken } from "@/lib/jwt";
 
 interface JobDetail {
   id: string;
@@ -80,11 +83,31 @@ export default function JobDetailPage() {
   const [applicantPhone, setApplicantPhone] = useState(currentUser?.phone || "");
   const [experience, setExperience] = useState("");
   const [applicantLocation, setApplicantLocation] = useState("Belagavi");
-  const [resumeUrl, setResumeUrl] = useState("");
   const [coverNote, setCoverNote] = useState("");
+
+  // Resume upload state
+  const [resumeFile, setResumeFile] = useState<File | null>(null);
+  const [uploadedResumeData, setUploadedResumeData] = useState<{
+    resumePath: string;
+    filename: string;
+    mime: string;
+    size: number;
+  } | null>(null);
+  const [uploadingResume, setUploadingResume] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitSuccess, setSubmitSuccess] = useState(false);
+
+  // Contact Employer Modal state
+  const [contactModalOpen, setContactModalOpen] = useState(false);
+  const [contactEmail, setContactEmail] = useState<string | null>(null);
+  const [contactSubject, setContactSubject] = useState("");
+  const [contactBody, setContactBody] = useState("");
+  const [sendingContact, setSendingContact] = useState(false);
+  const [contactSuccess, setContactSuccess] = useState(false);
+  const [contactError, setContactError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!jobId) return;
@@ -103,7 +126,12 @@ export default function JobDetailPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/jobs/${jobId}`);
+      const token = getAuthToken();
+      const res = await fetch(`/api/jobs/${jobId}`, {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
       if (!res.ok) {
         if (res.status === 404) setError("Job listing not found or has been closed.");
         else setError("Failed to load job details.");
@@ -114,11 +142,67 @@ export default function JobDetailPage() {
       if (data.userContext?.hasApplied) {
         setHasApplied(true);
       }
+      if (data.job?.contact_email) {
+        setContactEmail(data.job.contact_email);
+      }
     } catch (err: any) {
       console.error("Fetch job error:", err);
       setError("An unexpected error occurred.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      setUploadError("File size exceeds maximum allowed limit of 5 MB");
+      return;
+    }
+
+    const validExtensions = ["pdf", "doc", "docx"];
+    const fileExt = file.name.split(".").pop()?.toLowerCase();
+    if (!fileExt || !validExtensions.includes(fileExt)) {
+      setUploadError("Invalid file extension. Please select a PDF, DOC, or DOCX document.");
+      return;
+    }
+
+    setResumeFile(file);
+    setUploadError(null);
+    setUploadingResume(true);
+
+    try {
+      const token = getAuthToken();
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch("/api/jobs/resume-upload", {
+        method: "POST",
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: formData,
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to upload resume");
+      }
+
+      setUploadedResumeData({
+        resumePath: data.resumePath,
+        filename: data.filename || file.name,
+        mime: data.mime || file.type,
+        size: data.size || file.size,
+      });
+    } catch (err: any) {
+      console.error("Resume upload error:", err);
+      setUploadError(err.message || "Failed to upload resume");
+      setResumeFile(null);
+    } finally {
+      setUploadingResume(false);
     }
   };
 
@@ -129,20 +213,32 @@ export default function JobDetailPage() {
       return;
     }
 
+    if (!uploadedResumeData) {
+      setSubmitError("Please select and upload a valid PDF or DOCX resume document before submitting.");
+      return;
+    }
+
     setSubmitting(true);
     setSubmitError(null);
 
     try {
+      const token = getAuthToken();
       const res = await fetch(`/api/jobs/${jobId}/applications`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           candidateName: applicantName,
           candidateEmail: applicantEmail,
           candidatePhone: applicantPhone,
           experience,
           location: applicantLocation,
-          resumeUrl,
+          resumePath: uploadedResumeData.resumePath,
+          resumeFilename: uploadedResumeData.filename,
+          resumeMime: uploadedResumeData.mime,
+          resumeSize: uploadedResumeData.size,
           coverNote,
         }),
       });
@@ -164,6 +260,43 @@ export default function JobDetailPage() {
       setSubmitError("Failed to connect to application service");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleSendInAppContact = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSendingContact(true);
+    setContactError(null);
+
+    try {
+      const token = getAuthToken();
+      const res = await fetch(`/api/jobs/${jobId}/contact`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          subject: contactSubject,
+          body: contactBody,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to send message to employer");
+
+      setContactSuccess(true);
+      setTimeout(() => {
+        setContactModalOpen(false);
+        setContactSuccess(false);
+        setContactSubject("");
+        setContactBody("");
+      }, 2000);
+    } catch (err: any) {
+      console.error("Contact employer error:", err);
+      setContactError(err.message || "Failed to send message");
+    } finally {
+      setSendingContact(false);
     }
   };
 
@@ -210,9 +343,16 @@ export default function JobDetailPage() {
     );
   }
 
+  const encodedSubject = encodeURIComponent(`Inquiry regarding ${job.title}`);
+  const encodedBody = encodeURIComponent(`Hi ${job.company_name},\n\nI have a query regarding the job opening for ${job.title}...\n\n`);
+  const effectiveContactEmail = contactEmail || "contact@belconnect.com";
+
+  const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(effectiveContactEmail)}&su=${encodedSubject}&body=${encodedBody}`;
+  const mailtoUrl = `mailto:${encodeURIComponent(effectiveContactEmail)}?subject=${encodedSubject}&body=${encodedBody}`;
+
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-muted/10 text-foreground pb-20">
-      {/* ── Top Navigation Bar ────────────────────────────────────────── */}
+      {/* Top Navigation Bar */}
       <div className="border-b border-border bg-white dark:bg-card">
         <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
           <Link
@@ -222,18 +362,31 @@ export default function JobDetailPage() {
             <ArrowLeft className="h-4 w-4" /> Back to all jobs
           </Link>
 
-          <button
-            onClick={handleShare}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border text-xs font-semibold hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
-          >
-            <Share2 className="h-3.5 w-3.5" />
-            {copied ? "Link Copied!" : "Share Job"}
-          </button>
+          <div className="flex items-center gap-2">
+            {currentUser && (
+              <button
+                onClick={() => {
+                  setContactSubject(`Inquiry regarding ${job.title}`);
+                  setContactModalOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-blue-500/30 bg-blue-500/10 text-xs font-semibold text-blue-600 hover:bg-blue-500/20 transition-colors"
+              >
+                <Mail className="h-3.5 w-3.5" /> Contact Employer
+              </button>
+            )}
+            <button
+              onClick={handleShare}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-border text-xs font-semibold hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+            >
+              <Share2 className="h-3.5 w-3.5" />
+              {copied ? "Link Copied!" : "Share Job"}
+            </button>
+          </div>
         </div>
       </div>
 
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 space-y-6">
-        {/* ── Job Header Card ───────────────────────────────────────────── */}
+        {/* Job Header Card */}
         <div className="rounded-3xl border border-border bg-white dark:bg-card p-6 sm:p-8 shadow-sm space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-6">
             <div className="flex items-start gap-5">
@@ -256,9 +409,7 @@ export default function JobDetailPage() {
                   </span>
                 </div>
 
-                <h1 className="text-2xl sm:text-3xl font-extrabold text-foreground">
-                  {job.title}
-                </h1>
+                <h1 className="text-2xl sm:text-3xl font-extrabold text-foreground">{job.title}</h1>
 
                 <div className="flex flex-wrap items-center gap-2 pt-1">
                   <span className="px-3 py-1 rounded-full text-xs font-bold bg-blue-500/10 text-blue-600 border border-blue-500/20">
@@ -344,11 +495,9 @@ export default function JobDetailPage() {
           </div>
         </div>
 
-        {/* ── Details & About Company Grid ───────────────────────────────── */}
+        {/* Details & About Company Grid */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Main Description Column */}
           <div className="lg:col-span-2 space-y-6">
-            {/* Job Description */}
             <div className="rounded-2xl border border-border bg-white dark:bg-card p-6 shadow-sm space-y-4">
               <h2 className="text-base sm:text-lg font-bold text-foreground">About the Role</h2>
               <div className="text-xs sm:text-sm text-muted-foreground leading-relaxed whitespace-pre-line">
@@ -356,7 +505,6 @@ export default function JobDetailPage() {
               </div>
             </div>
 
-            {/* Responsibilities */}
             {job.responsibilities && (
               <div className="rounded-2xl border border-border bg-white dark:bg-card p-6 shadow-sm space-y-4">
                 <h2 className="text-base sm:text-lg font-bold text-foreground">Key Responsibilities</h2>
@@ -366,7 +514,6 @@ export default function JobDetailPage() {
               </div>
             )}
 
-            {/* Requirements */}
             {job.requirements && (
               <div className="rounded-2xl border border-border bg-white dark:bg-card p-6 shadow-sm space-y-4">
                 <h2 className="text-base sm:text-lg font-bold text-foreground">Requirements & Qualifications</h2>
@@ -376,7 +523,6 @@ export default function JobDetailPage() {
               </div>
             )}
 
-            {/* Perks & Benefits */}
             {job.perks_benefits && (
               <div className="rounded-2xl border border-border bg-white dark:bg-card p-6 shadow-sm space-y-4">
                 <h2 className="text-base sm:text-lg font-bold text-foreground">Perks & Benefits</h2>
@@ -387,7 +533,6 @@ export default function JobDetailPage() {
             )}
           </div>
 
-          {/* Right Sidebar: About Company */}
           <div className="space-y-6">
             <div className="rounded-2xl border border-border bg-white dark:bg-card p-6 shadow-sm space-y-5">
               <div className="flex items-center gap-3">
@@ -401,55 +546,18 @@ export default function JobDetailPage() {
               </div>
 
               {job.about_company ? (
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  {job.about_company}
-                </p>
+                <p className="text-xs text-muted-foreground leading-relaxed">{job.about_company}</p>
               ) : (
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  Verified business on BelConnect offering local career opportunities across Belagavi and surrounding districts.
+                  Offering local career opportunities across Belagavi and surrounding districts.
                 </p>
               )}
-
-              <div className="space-y-2 pt-2 border-t border-border text-xs">
-                {job.company_industry && (
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Industry</span>
-                    <span className="font-semibold text-foreground capitalize">{job.company_industry}</span>
-                  </div>
-                )}
-                {job.company_size && (
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Company Size</span>
-                    <span className="font-semibold text-foreground">{job.company_size} employees</span>
-                  </div>
-                )}
-                {job.company_website && (
-                  <div className="flex justify-between items-center">
-                    <span className="text-muted-foreground">Website</span>
-                    <a
-                      href={job.company_website.startsWith("http") ? job.company_website : `https://${job.company_website}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="font-semibold text-blue-600 hover:underline flex items-center gap-1"
-                    >
-                      Visit site <ExternalLink className="h-3 w-3" />
-                    </a>
-                  </div>
-                )}
-              </div>
-
-              <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-400 flex items-start gap-2.5 text-xs">
-                <ShieldCheck className="h-4 w-4 shrink-0 mt-0.5" />
-                <span>
-                  <strong>BelConnect Verified:</strong> Employer identity is registered on the platform.
-                </span>
-              </div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* ── Application Modal ─────────────────────────────────────────── */}
+      {/* Application Modal */}
       <AnimatePresence>
         {applyModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
@@ -480,7 +588,7 @@ export default function JobDetailPage() {
                   </div>
                   <h4 className="text-lg font-bold text-foreground">Application Sent!</h4>
                   <p className="text-xs text-muted-foreground">
-                    Your profile and application have been delivered to {job.company_name}.
+                    Your resume and application have been delivered to {job.company_name}.
                   </p>
                 </div>
               ) : (
@@ -547,17 +655,39 @@ export default function JobDetailPage() {
                     </div>
                   </div>
 
+                  {/* Resume Upload Field */}
                   <div>
                     <label className="block text-xs font-bold text-foreground mb-1">
-                      Resume Link (Google Drive, LinkedIn, or Portfolio)
+                      Upload Resume (PDF/DOC/DOCX, max 5 MB) *
                     </label>
-                    <input
-                      type="url"
-                      value={resumeUrl}
-                      onChange={(e) => setResumeUrl(e.target.value)}
-                      placeholder="https://drive.google.com/..."
-                      className="w-full px-3 py-2.5 rounded-xl border border-border bg-muted/40 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    />
+                    <div className="relative border-2 border-dashed border-border rounded-xl p-4 text-center bg-muted/30 hover:bg-muted/50 transition-colors">
+                      <input
+                        type="file"
+                        accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        onChange={handleFileChange}
+                        className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                      />
+                      <div className="flex flex-col items-center justify-center space-y-1">
+                        {uploadingResume ? (
+                          <div className="flex items-center gap-2 text-xs text-blue-600 font-semibold">
+                            <Loader2 className="h-4 w-4 animate-spin" /> Verifying & Uploading Resume…
+                          </div>
+                        ) : uploadedResumeData ? (
+                          <div className="flex items-center gap-2 text-xs text-emerald-600 font-semibold">
+                            <CheckCircle2 className="h-4 w-4" /> {uploadedResumeData.filename} (Uploaded)
+                          </div>
+                        ) : (
+                          <>
+                            <Upload className="h-6 w-6 text-muted-foreground" />
+                            <span className="text-xs font-semibold text-foreground">Click to upload resume document</span>
+                            <span className="text-[10px] text-muted-foreground">PDF, DOC, DOCX up to 5 MB</span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    {uploadError && (
+                      <p className="text-[11px] text-rose-500 font-medium mt-1">{uploadError}</p>
+                    )}
                   </div>
 
                   <div>
@@ -581,7 +711,7 @@ export default function JobDetailPage() {
                     </button>
                     <button
                       type="submit"
-                      disabled={submitting}
+                      disabled={submitting || uploadingResume || !uploadedResumeData}
                       className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-md transition-all flex items-center gap-1.5 disabled:opacity-50"
                     >
                       {submitting ? "Submitting..." : "Submit Application"}
@@ -589,6 +719,101 @@ export default function JobDetailPage() {
                   </div>
                 </form>
               )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Contact Employer Modal */}
+      <AnimatePresence>
+        {contactModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="w-full max-w-md bg-white dark:bg-card border border-border rounded-3xl p-6 shadow-2xl relative space-y-4"
+            >
+              <button
+                onClick={() => setContactModalOpen(false)}
+                className="absolute top-4 right-4 p-2 rounded-full hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+
+              <div className="border-b border-border pb-3">
+                <h3 className="font-bold text-lg text-foreground">Contact Employer</h3>
+                <p className="text-xs text-muted-foreground">{job.company_name} · {job.title}</p>
+              </div>
+
+              <div className="space-y-3">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Choose Contact Method</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <a
+                    href={gmailUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-center gap-2 p-3 rounded-xl border border-border hover:bg-muted text-xs font-bold text-foreground transition-colors"
+                  >
+                    <Mail className="h-4 w-4 text-red-500" /> Open in Gmail
+                  </a>
+                  <a
+                    href={mailtoUrl}
+                    className="flex items-center justify-center gap-2 p-3 rounded-xl border border-border hover:bg-muted text-xs font-bold text-foreground transition-colors"
+                  >
+                    <Mail className="h-4 w-4 text-blue-500" /> Mail App
+                  </a>
+                </div>
+
+                <div className="relative my-3">
+                  <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-border" /></div>
+                  <div className="relative flex justify-center text-[10px] uppercase font-bold text-muted-foreground bg-white dark:bg-card px-2">
+                    Or Send via BelConnect
+                  </div>
+                </div>
+
+                {contactSuccess ? (
+                  <div className="p-4 text-center text-xs font-bold text-emerald-600 bg-emerald-500/10 rounded-xl">
+                    Message sent to employer!
+                  </div>
+                ) : (
+                  <form onSubmit={handleSendInAppContact} className="space-y-3">
+                    {contactError && (
+                      <p className="text-xs text-rose-500 font-medium">{contactError}</p>
+                    )}
+                    <div>
+                      <label className="block text-xs font-bold text-foreground mb-1">Subject</label>
+                      <input
+                        type="text"
+                        required
+                        maxLength={200}
+                        value={contactSubject}
+                        onChange={(e) => setContactSubject(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl border border-border bg-muted/40 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-blue-600"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-foreground mb-1">Message Body</label>
+                      <textarea
+                        required
+                        rows={4}
+                        maxLength={5000}
+                        value={contactBody}
+                        onChange={(e) => setContactBody(e.target.value)}
+                        placeholder="Write your message here..."
+                        className="w-full px-3 py-2 rounded-xl border border-border bg-muted/40 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-blue-600 resize-none"
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={sendingContact}
+                      className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                    >
+                      {sendingContact ? <Loader2 className="h-4 w-4 animate-spin" /> : <><Send className="h-4 w-4" /> Send from BelConnect</>}
+                    </button>
+                  </form>
+                )}
+              </div>
             </motion.div>
           </div>
         )}

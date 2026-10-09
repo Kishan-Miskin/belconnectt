@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
-import { query } from "@/lib/db";
+import { query, getClient, isDatabaseUnavailableError } from "@/lib/db";
 import { getAuthenticatedUser } from "@/lib/jwt";
+import { parseAndValidate, updateCandidateStatusSchema } from "@/lib/validations";
+import crypto from "crypto";
 
-// ── GET /api/jobprovider/candidates — Applications Across All Employer Jobs 
+// ── GET /api/jobprovider/candidates — Applications Across Employer Jobs ─
 export async function GET(request: Request) {
   try {
     const authUser = getAuthenticatedUser(request);
@@ -22,8 +24,10 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const status = searchParams.get("status");
-    const jobId = searchParams.get("job_id");
+    const jobId = searchParams.get("job_id") || searchParams.get("jobId");
     const q = searchParams.get("q")?.trim() || "";
+    const cursor = searchParams.get("cursor");
+    const limit = Math.min(Math.max(parseInt(searchParams.get("limit") || "20", 10), 1), 50);
 
     const conditions: string[] = ["j.job_provider_id = $1"];
     const params: any[] = [authUser.userId];
@@ -46,6 +50,14 @@ export async function GET(request: Request) {
       );
     }
 
+    if (cursor) {
+      params.push(cursor);
+      conditions.push(`ja.created_at < $${params.length}`);
+    }
+
+    params.push(limit + 1);
+    const limitIdx = params.length;
+
     const sql = `
       SELECT 
         ja.id,
@@ -57,6 +69,14 @@ export async function GET(request: Request) {
         ja.experience,
         ja.location,
         ja.resume_url,
+        ja.resume_path,
+        ja.resume_filename,
+        ja.resume_mime,
+        ja.resume_size,
+        ja.assessment_url,
+        ja.assessment_instructions,
+        ja.assessment_due_at,
+        ja.assessment_sent_at,
         ja.cover_note,
         ja.status,
         ja.created_at,
@@ -69,13 +89,25 @@ export async function GET(request: Request) {
       JOIN jobs j ON ja.job_id = j.id
       LEFT JOIN customers c ON ja.candidate_id = c.id
       WHERE ${conditions.join(" AND ")}
-      ORDER BY ja.created_at DESC;
+      ORDER BY ja.created_at DESC
+      LIMIT $${limitIdx};
     `;
 
     const res = await query(sql, params);
-    return NextResponse.json({ candidates: res.rows });
+    const hasMore = res.rows.length > limit;
+    const candidates = hasMore ? res.rows.slice(0, limit) : res.rows;
+    const nextCursor = candidates.length > 0 ? candidates[candidates.length - 1].created_at : null;
+
+    return NextResponse.json({
+      candidates,
+      hasMore,
+      nextCursor,
+    });
   } catch (error: any) {
     console.error("GET /api/jobprovider/candidates error:", error);
+    if (isDatabaseUnavailableError(error)) {
+      return NextResponse.json({ error: "Database temporarily unavailable" }, { status: 503 });
+    }
     return NextResponse.json(
       { error: "Failed to fetch candidates" },
       { status: 500 }
@@ -83,7 +115,19 @@ export async function GET(request: Request) {
   }
 }
 
-// ── PATCH /api/jobprovider/candidates — Update Application Status ─────────
+// Allowed status transitions map
+const ALLOWED_TRANSITIONS: Record<string, string[]> = {
+  new: ["reviewed", "shortlisted", "rejected", "withdrawn"],
+  reviewed: ["shortlisted", "assessment_sent", "interview_scheduled", "rejected", "hired", "withdrawn"],
+  shortlisted: ["assessment_sent", "interview_scheduled", "rejected", "hired", "withdrawn"],
+  assessment_sent: ["interview_scheduled", "rejected", "hired", "shortlisted", "withdrawn"],
+  interview_scheduled: ["rejected", "hired", "shortlisted", "withdrawn"],
+  rejected: ["shortlisted", "reviewed"],
+  hired: ["closed"],
+  withdrawn: [],
+};
+
+// ── PATCH /api/jobprovider/candidates — Update Candidate Status ───────────
 export async function PATCH(request: Request) {
   try {
     const authUser = getAuthenticatedUser(request);
@@ -101,27 +145,20 @@ export async function PATCH(request: Request) {
       );
     }
 
-    const body = await request.json();
-    const { applicationId, status } = body;
+    const validation = await parseAndValidate(request, updateCandidateStatusSchema);
+    if (validation.response) return validation.response;
+    const { applicationId, status: newStatus } = validation.data;
 
-    if (!applicationId || !status) {
-      return NextResponse.json(
-        { error: "Application ID and new status are required" },
-        { status: 400 }
-      );
-    }
-
-    const validStatuses = ["new", "reviewed", "shortlisted", "hired", "rejected"];
-    if (!validStatuses.includes(status)) {
-      return NextResponse.json(
-        { error: `Invalid status. Must be one of: ${validStatuses.join(", ")}` },
-        { status: 400 }
-      );
-    }
-
-    // Verify application belongs to a job owned by this employer
+    // Verify application & job ownership
     const checkSql = `
-      SELECT ja.id, j.job_provider_id
+      SELECT 
+        ja.id,
+        ja.candidate_id,
+        ja.candidate_name,
+        ja.status AS current_status,
+        j.id AS job_id,
+        j.title AS job_title,
+        j.job_provider_id
       FROM job_applications ja
       JOIN jobs j ON ja.job_id = j.id
       WHERE ja.id = $1
@@ -132,28 +169,76 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Application not found" }, { status: 404 });
     }
 
-    if (checkRes.rows[0].job_provider_id !== authUser.userId && authUser.role !== "admin") {
+    const app = checkRes.rows[0];
+    if (app.job_provider_id !== authUser.userId && authUser.role !== "admin") {
       return NextResponse.json(
         { error: "Forbidden: You do not own the job for this application" },
         { status: 403 }
       );
     }
 
-    const updateSql = `
-      UPDATE job_applications
-      SET status = $1, updated_at = NOW()
-      WHERE id = $2
-      RETURNING *;
-    `;
-    const updateRes = await query(updateSql, [status, applicationId]);
+    const currentStatus = app.current_status || "new";
+    const allowed = ALLOWED_TRANSITIONS[currentStatus] || Object.keys(ALLOWED_TRANSITIONS);
 
-    return NextResponse.json({
-      success: true,
-      application: updateRes.rows[0],
-      message: `Candidate status updated to ${status}`,
-    });
+    if (!allowed.includes(newStatus) && authUser.role !== "admin") {
+      return NextResponse.json(
+        { error: `Invalid status transition from '${currentStatus}' to '${newStatus}'` },
+        { status: 400 }
+      );
+    }
+
+    const client = await getClient();
+    try {
+      await client.query("BEGIN");
+
+      const updateSql = `
+        UPDATE job_applications
+        SET status = $1, status_updated_at = NOW(), reviewed_by = $2, updated_at = NOW()
+        WHERE id = $3
+        RETURNING *;
+      `;
+      const updateRes = await client.query(updateSql, [newStatus, authUser.userId, applicationId]);
+
+      // Insert audit event
+      await client.query(
+        `INSERT INTO job_application_events (
+          application_id, actor_id, actor_role, event_type, from_status, to_status, created_at
+        ) VALUES ($1, $2, $3, 'status_changed', $4, $5, NOW())`,
+        [applicationId, authUser.userId, "job_provider", currentStatus, newStatus]
+      );
+
+      // Insert candidate notification
+      const notifId = `notif_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
+      const readableStatus = newStatus.replace("_", " ").toUpperCase();
+      await client.query(
+        `INSERT INTO notifications (id, user_id, type, title, body, created_at)
+         VALUES ($1, $2, 'job_status_update', $3, $4, NOW())`,
+        [
+          notifId,
+          app.candidate_id,
+          `Application Status Updated: ${app.job_title}`,
+          `Your application status for "${app.job_title}" has been updated to: ${readableStatus}.`,
+        ]
+      );
+
+      await client.query("COMMIT");
+
+      return NextResponse.json({
+        success: true,
+        application: updateRes.rows[0],
+        message: `Candidate status updated to ${newStatus}`,
+      });
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
   } catch (error: any) {
     console.error("PATCH /api/jobprovider/candidates error:", error);
+    if (isDatabaseUnavailableError(error)) {
+      return NextResponse.json({ error: "Database temporarily unavailable" }, { status: 503 });
+    }
     return NextResponse.json(
       { error: "Failed to update candidate status" },
       { status: 500 }

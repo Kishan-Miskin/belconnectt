@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { query } from "@/lib/db";
+import { query, isDatabaseUnavailableError } from "@/lib/db";
 import { getAuthenticatedUser } from "@/lib/jwt";
 
 // ── GET /api/jobprovider/jobs — List Employer's Posted Jobs ───────────────
@@ -22,6 +22,8 @@ export async function GET(request: Request) {
 
     const { searchParams } = new URL(request.url);
     const status = searchParams.get("status");
+    const cursor = searchParams.get("cursor");
+    const limit = Math.min(Math.max(parseInt(searchParams.get("limit") || "20", 10), 1), 50);
 
     const conditions: string[] = ["j.job_provider_id = $1"];
     const params: any[] = [authUser.userId];
@@ -30,6 +32,14 @@ export async function GET(request: Request) {
       params.push(status);
       conditions.push(`j.status = $${params.length}`);
     }
+
+    if (cursor) {
+      params.push(cursor);
+      conditions.push(`j.created_at < $${params.length}`);
+    }
+
+    params.push(limit + 1);
+    const limitIdx = params.length;
 
     const sql = `
       SELECT 
@@ -48,26 +58,36 @@ export async function GET(request: Request) {
         j.openings,
         j.experience_required,
         j.education_required,
-        j.description,
-        j.responsibilities,
-        j.requirements,
-        j.perks_benefits,
         j.deadline,
         j.status,
         j.views_count,
         j.is_boosted,
+        j.contact_email,
+        j.published_at,
+        j.applicants_count,
         j.created_at,
-        j.updated_at,
-        (SELECT COUNT(*)::int FROM job_applications ja WHERE ja.job_id = j.id) AS applicants_count
+        j.updated_at
       FROM jobs j
       WHERE ${conditions.join(" AND ")}
-      ORDER BY j.created_at DESC;
+      ORDER BY j.created_at DESC
+      LIMIT $${limitIdx};
     `;
 
     const res = await query(sql, params);
-    return NextResponse.json({ jobs: res.rows });
+    const hasMore = res.rows.length > limit;
+    const jobs = hasMore ? res.rows.slice(0, limit) : res.rows;
+    const nextCursor = jobs.length > 0 ? jobs[jobs.length - 1].created_at : null;
+
+    return NextResponse.json({
+      jobs,
+      hasMore,
+      nextCursor,
+    });
   } catch (error: any) {
     console.error("GET /api/jobprovider/jobs error:", error);
+    if (isDatabaseUnavailableError(error)) {
+      return NextResponse.json({ error: "Database temporarily unavailable" }, { status: 503 });
+    }
     return NextResponse.json(
       { error: "Failed to fetch employer jobs" },
       { status: 500 }

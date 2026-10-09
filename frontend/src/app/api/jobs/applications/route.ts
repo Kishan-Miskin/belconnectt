@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { query } from "@/lib/db";
+import { query, isDatabaseUnavailableError } from "@/lib/db";
 import { getAuthenticatedUser } from "@/lib/jwt";
 
 // ── GET /api/jobs/applications — Candidate's Own Applications (Job Seeker) ─
@@ -14,14 +14,19 @@ export async function GET(request: Request) {
     }
 
     const { searchParams } = new URL(request.url);
-    const limit = Math.min(Math.max(parseInt(searchParams.get("limit") || "50", 10), 1), 100);
-    const offset = Math.max(parseInt(searchParams.get("offset") || "0", 10), 0);
+    const limit = Math.min(Math.max(parseInt(searchParams.get("limit") || "20", 10), 1), 50);
+    const cursor = searchParams.get("cursor"); // created_at
 
-    const countRes = await query(
-      `SELECT COUNT(*)::int AS total FROM job_applications WHERE candidate_id = $1`,
-      [authUser.userId]
-    );
-    const total = countRes.rows[0]?.total || 0;
+    const conditions: string[] = ["ja.candidate_id = $1"];
+    const params: any[] = [authUser.userId];
+
+    if (cursor) {
+      params.push(cursor);
+      conditions.push(`ja.created_at < $${params.length}`);
+    }
+
+    params.push(limit + 1);
+    const limitIdx = params.length;
 
     const sql = `
       SELECT 
@@ -34,8 +39,17 @@ export async function GET(request: Request) {
         ja.experience,
         ja.location,
         ja.resume_url,
+        ja.resume_path,
+        ja.resume_filename,
+        ja.resume_mime,
+        ja.resume_size,
+        ja.assessment_url,
+        ja.assessment_instructions,
+        ja.assessment_due_at,
+        ja.assessment_sent_at,
         ja.cover_note,
         ja.status,
+        ja.status_updated_at,
         ja.created_at,
         ja.updated_at,
         j.title AS job_title,
@@ -44,27 +58,75 @@ export async function GET(request: Request) {
         j.work_mode,
         j.location AS job_location,
         j.status AS job_status,
-        COALESCE(bp.company_name, jp.name, 'BelConnect Partner') AS company_name,
+        COALESCE(j.contact_email, bp.contact_email, jp.email) AS contact_email,
+        COALESCE(NULLIF(TRIM(bp.company_name), ''), NULLIF(TRIM(jp.name), ''), 'Company Profile Pending') AS company_name,
         bp.logo_url AS company_logo
       FROM job_applications ja
       JOIN jobs j ON ja.job_id = j.id
       LEFT JOIN business_profiles bp ON j.job_provider_id = bp.job_provider_id
       LEFT JOIN job_providers jp ON j.job_provider_id = jp.id
-      WHERE ja.candidate_id = $1
+      WHERE ${conditions.join(" AND ")}
       ORDER BY ja.created_at DESC
-      LIMIT $2 OFFSET $3;
+      LIMIT $${limitIdx};
     `;
 
-    const res = await query(sql, [authUser.userId, limit, offset]);
+    const res = await query(sql, params);
+    const hasMore = res.rows.length > limit;
+    const apps = hasMore ? res.rows.slice(0, limit) : res.rows;
+    const nextCursor = apps.length > 0 ? apps[apps.length - 1].created_at : null;
+
+    if (apps.length === 0) {
+      return NextResponse.json({ applications: [], hasMore: false });
+    }
+
+    const appIds = apps.map((a) => a.id);
+
+    // Fetch timeline events for these applications
+    const eventsRes = await query(
+      `SELECT id, application_id, actor_role, event_type, from_status, to_status, meta, created_at
+       FROM job_application_events
+       WHERE application_id = ANY($1)
+       ORDER BY created_at ASC`,
+      [appIds]
+    );
+
+    // Fetch scheduled interviews for these applications
+    const interviewsRes = await query(
+      `SELECT id, application_id, interview_date, interview_time, interview_mode, meeting_link, location_details, status, notes
+       FROM job_interviews
+       WHERE application_id = ANY($1)
+       ORDER BY interview_date ASC`,
+      [appIds]
+    );
+
+    const eventsMap = new Map<string, any[]>();
+    eventsRes.rows.forEach((e) => {
+      const list = eventsMap.get(e.application_id) || [];
+      list.push(e);
+      eventsMap.set(e.application_id, list);
+    });
+
+    const interviewsMap = new Map<string, any>();
+    interviewsRes.rows.forEach((i) => {
+      interviewsMap.set(i.application_id, i);
+    });
+
+    const enrichedApplications = apps.map((app) => ({
+      ...app,
+      events: eventsMap.get(app.id) || [],
+      interview: interviewsMap.get(app.id) || null,
+    }));
 
     return NextResponse.json({
-      applications: res.rows,
-      total,
-      limit,
-      offset,
+      applications: enrichedApplications,
+      hasMore,
+      nextCursor,
     });
   } catch (error: any) {
     console.error("GET /api/jobs/applications error:", error?.message || error);
+    if (isDatabaseUnavailableError(error)) {
+      return NextResponse.json({ error: "Database temporarily unavailable" }, { status: 503 });
+    }
     return NextResponse.json(
       { error: "Failed to fetch candidate applications" },
       { status: 500 }

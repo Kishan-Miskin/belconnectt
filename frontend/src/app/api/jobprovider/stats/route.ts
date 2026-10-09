@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { query } from "@/lib/db";
+import { query, isDatabaseUnavailableError } from "@/lib/db";
 import { getAuthenticatedUser } from "@/lib/jwt";
 
 // ── GET /api/jobprovider/stats — Real Live Employer Dashboard Metrics ──────
@@ -22,23 +22,41 @@ export async function GET(request: Request) {
 
     const providerId = authUser.userId;
 
-    // 1. KPI Counts
-    const countsSql = `
-      SELECT
-        (SELECT COUNT(*)::int FROM jobs WHERE job_provider_id = $1 AND status = 'active') AS active_jobs,
-        (SELECT COUNT(ja.id)::int FROM job_applications ja JOIN jobs j ON ja.job_id = j.id WHERE j.job_provider_id = $1) AS total_applicants,
-        (SELECT COUNT(ja.id)::int FROM job_applications ja JOIN jobs j ON ja.job_id = j.id WHERE j.job_provider_id = $1 AND ja.status = 'new') AS new_applicants,
-        (SELECT COUNT(*)::int FROM job_interviews WHERE job_provider_id = $1 AND status = 'scheduled') AS scheduled_interviews,
-        (SELECT COUNT(ja.id)::int FROM job_applications ja JOIN jobs j ON ja.job_id = j.id WHERE j.job_provider_id = $1 AND ja.status = 'hired') AS candidates_hired
+    // 1. Grouped Counts for Jobs & Applications in fast combined queries
+    const jobsMetricsSql = `
+      SELECT 
+        COUNT(*) FILTER (WHERE status = 'active')::int AS active_jobs,
+        COALESCE(SUM(applicants_count), 0)::int AS total_applicants
+      FROM jobs
+      WHERE job_provider_id = $1;
     `;
-    const countsRes = await query(countsSql, [providerId]);
-    const metrics = countsRes.rows[0] || {
-      active_jobs: 0,
-      total_applicants: 0,
-      new_applicants: 0,
-      scheduled_interviews: 0,
-      candidates_hired: 0,
-    };
+
+    const appMetricsSql = `
+      SELECT
+        COUNT(*) FILTER (WHERE ja.status = 'new')::int AS new_applicants,
+        COUNT(*) FILTER (WHERE ja.status = 'hired')::int AS candidates_hired
+      FROM job_applications ja
+      JOIN jobs j ON ja.job_id = j.id
+      WHERE j.job_provider_id = $1;
+    `;
+
+    const interviewMetricsSql = `
+      SELECT COUNT(*)::int AS scheduled_interviews
+      FROM job_interviews
+      WHERE job_provider_id = $1 AND status = 'scheduled';
+    `;
+
+    const [jobsRes, appRes, intRes] = await Promise.all([
+      query(jobsMetricsSql, [providerId]),
+      query(appMetricsSql, [providerId]),
+      query(interviewMetricsSql, [providerId]),
+    ]);
+
+    const activeJobs = jobsRes.rows[0]?.active_jobs || 0;
+    const totalApplicants = jobsRes.rows[0]?.total_applicants || 0;
+    const newApplicants = appRes.rows[0]?.new_applicants || 0;
+    const candidatesHired = appRes.rows[0]?.candidates_hired || 0;
+    const scheduledInterviews = intRes.rows[0]?.scheduled_interviews || 0;
 
     // 2. Recent Applications (Top 5)
     const recentAppsSql = `
@@ -52,6 +70,7 @@ export async function GET(request: Request) {
         ja.experience,
         ja.location,
         ja.resume_url,
+        ja.resume_path,
         ja.status,
         ja.created_at,
         j.title AS job_title,
@@ -63,7 +82,6 @@ export async function GET(request: Request) {
       ORDER BY ja.created_at DESC
       LIMIT 5;
     `;
-    const recentAppsRes = await query(recentAppsSql, [providerId]);
 
     // 3. Upcoming Interviews (Top 5)
     const upcomingInterviewsSql = `
@@ -84,9 +102,8 @@ export async function GET(request: Request) {
       ORDER BY ji.interview_date ASC, ji.interview_time ASC
       LIMIT 5;
     `;
-    const interviewsRes = await query(upcomingInterviewsSql, [providerId]);
 
-    // 4. Active Job Listings (Top 5)
+    // 4. Active Job Listings (Top 5) using stored applicants_count
     const activeJobsSql = `
       SELECT 
         j.id,
@@ -102,21 +119,26 @@ export async function GET(request: Request) {
         j.status,
         j.created_at,
         j.deadline,
-        (SELECT COUNT(*)::int FROM job_applications ja WHERE ja.job_id = j.id) AS applicants_count
+        j.applicants_count
       FROM jobs j
       WHERE j.job_provider_id = $1
       ORDER BY j.created_at DESC
       LIMIT 5;
     `;
-    const activeJobsRes = await query(activeJobsSql, [providerId]);
+
+    const [recentAppsRes, interviewsRes, activeJobsRes] = await Promise.all([
+      query(recentAppsSql, [providerId]),
+      query(upcomingInterviewsSql, [providerId]),
+      query(activeJobsSql, [providerId]),
+    ]);
 
     return NextResponse.json({
       metrics: {
-        activeJobs: metrics.active_jobs,
-        totalApplicants: metrics.total_applicants,
-        newApplicants: metrics.new_applicants,
-        interviewsScheduled: metrics.scheduled_interviews,
-        candidatesHired: metrics.candidates_hired,
+        activeJobs,
+        totalApplicants,
+        newApplicants,
+        interviewsScheduled: scheduledInterviews,
+        candidatesHired,
       },
       recentApplications: recentAppsRes.rows,
       upcomingInterviews: interviewsRes.rows,
@@ -124,6 +146,9 @@ export async function GET(request: Request) {
     });
   } catch (error: any) {
     console.error("GET /api/jobprovider/stats error:", error);
+    if (isDatabaseUnavailableError(error)) {
+      return NextResponse.json({ error: "Database temporarily unavailable" }, { status: 503 });
+    }
     return NextResponse.json(
       { error: "Failed to fetch dashboard statistics" },
       { status: 500 }

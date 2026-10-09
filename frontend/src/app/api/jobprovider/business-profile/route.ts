@@ -42,7 +42,7 @@ export async function GET(request: Request) {
     const defaultProfile = {
       id: null,
       job_provider_id: providerId,
-      company_name: jp?.name || "My Business",
+      company_name: "",
       industry: "services",
       company_size: "1-10",
       city: "Belagavi",
@@ -51,7 +51,7 @@ export async function GET(request: Request) {
       contact_email: jp?.email || "",
       contact_phone: jp?.phone || "",
       about_company: "",
-      logo_url: jp?.avatar || null,
+      logo_url: null,
     };
 
     return NextResponse.json({ profile: defaultProfile });
@@ -156,6 +156,13 @@ export async function PUT(request: Request) {
       aboutCompany?.trim() || null,
       logoUrl || null,
     ]);
+
+    // Also sync company_name to job_providers.name for consistency
+    await query(`UPDATE job_providers SET name = $1, avatar = COALESCE($2, avatar) WHERE id = $3`, [
+      companyName.trim(),
+      logoUrl || null,
+      providerId,
+    ]).catch(() => {});
 
     return NextResponse.json({
       success: true,

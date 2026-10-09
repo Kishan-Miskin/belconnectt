@@ -22,7 +22,10 @@ import {
   ArrowRight,
   Radio,
   X,
-  HelpCircle
+  HelpCircle,
+  Briefcase,
+  Users,
+  Mail
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -86,7 +89,7 @@ export default function AccountPage() {
   const router = useRouter();
   const { currentUser, updateProfile, addAddress, deleteAddress, logout, fetchUserBookings, fetchUserAddresses } = useAuthStore();
   const { replayTour } = useOnboardingTour();
-  const [activeTab, setActiveTab] = useState<"bookings" | "addresses" | "profile">("bookings");
+  const [activeTab, setActiveTab] = useState<"bookings" | "addresses" | "profile" | "applications">("bookings");
   const { t } = useTranslation();
 
   const [isHydrated, setIsHydrated] = useState(() => {
@@ -481,6 +484,21 @@ export default function AccountPage() {
                 >
                   <User className="h-4 w-4" />
                   {t("account.profileSettings")}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("applications")}
+                  className={`w-full text-left px-4 py-3 rounded-xl flex items-center justify-between text-sm font-semibold transition-all cursor-pointer ${
+                    activeTab === "applications"
+                      ? "bg-blue-600 text-white shadow-md shadow-blue-600/20"
+                      : "text-foreground hover:bg-muted"
+                  }`}
+                >
+                  <span className="flex items-center gap-3">
+                    <Briefcase className="h-4 w-4" />
+                    Applications & Jobs
+                  </span>
                 </button>
 
                 <button
@@ -956,6 +974,195 @@ export default function AccountPage() {
                       </div>
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* TAB 4: JOB APPLICATIONS & ACTIONS */}
+              {activeTab === "applications" && (
+                <div className="space-y-6">
+                  {activeUser.role === "job_provider" ? (
+                    <>
+                      <div>
+                        <h2 className="text-2xl font-bold text-foreground">Employer Job Portal Actions</h2>
+                        <p className="text-sm text-muted-foreground">Manage your published jobs, candidates, interviews, and business profile.</p>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                        <Link
+                          href="/jobprovider/post-job"
+                          className="p-5 rounded-2xl border border-border bg-card shadow-sm hover:shadow-md hover:border-blue-500/50 transition-all flex flex-col justify-between group"
+                        >
+                          <div className="space-y-3">
+                            <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-600 flex items-center justify-center font-bold">
+                              <Plus className="h-5 w-5" />
+                            </div>
+                            <h3 className="font-bold text-base text-foreground group-hover:text-blue-600 transition-colors">
+                              Post a New Job
+                            </h3>
+                            <p className="text-xs text-muted-foreground leading-relaxed">
+                              Publish a new opening to local job seekers across Belagavi & North Karnataka.
+                            </p>
+                          </div>
+                          <div className="mt-4 pt-3 border-t border-border flex items-center justify-between text-xs font-semibold text-blue-600">
+                            <span>Post Job Now</span>
+                            <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
+                          </div>
+                        </Link>
+
+                        <Link
+                          href="/jobprovider/jobs"
+                          className="p-5 rounded-2xl border border-border bg-card shadow-sm hover:shadow-md hover:border-blue-500/50 transition-all flex flex-col justify-between group"
+                        >
+                          <div className="space-y-3">
+                            <div className="w-10 h-10 rounded-xl bg-indigo-500/10 text-indigo-600 flex items-center justify-center font-bold">
+                              <Briefcase className="h-5 w-5" />
+                            </div>
+                            <h3 className="font-bold text-base text-foreground group-hover:text-indigo-600 transition-colors">
+                              Manage Job Listings
+                            </h3>
+                            <p className="text-xs text-muted-foreground leading-relaxed">
+                              View, edit, or close active job postings and check total applicants.
+                            </p>
+                          </div>
+                          <div className="mt-4 pt-3 border-t border-border flex items-center justify-between text-xs font-semibold text-indigo-600">
+                            <span>View Listings</span>
+                            <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
+                          </div>
+                        </Link>
+
+                        <Link
+                          href="/jobprovider/candidates"
+                          className="p-5 rounded-2xl border border-border bg-card shadow-sm hover:shadow-md hover:border-blue-500/50 transition-all flex flex-col justify-between group"
+                        >
+                          <div className="space-y-3">
+                            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center font-bold">
+                              <Users className="h-5 w-5" />
+                            </div>
+                            <h3 className="font-bold text-base text-foreground group-hover:text-emerald-600 transition-colors">
+                              Review Applicants
+                            </h3>
+                            <p className="text-xs text-muted-foreground leading-relaxed">
+                              Download candidate resumes, shortlist, send assessment links, or schedule interviews.
+                            </p>
+                          </div>
+                          <div className="mt-4 pt-3 border-t border-border flex items-center justify-between text-xs font-semibold text-emerald-600">
+                            <span>Review Candidates</span>
+                            <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
+                          </div>
+                        </Link>
+
+                        <Link
+                          href="/jobprovider/messages"
+                          className="p-5 rounded-2xl border border-border bg-card shadow-sm hover:shadow-md hover:border-blue-500/50 transition-all flex flex-col justify-between group"
+                        >
+                          <div className="space-y-3">
+                            <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-600 flex items-center justify-center font-bold">
+                              <Mail className="h-5 w-5" />
+                            </div>
+                            <h3 className="font-bold text-base text-foreground group-hover:text-amber-600 transition-colors">
+                              Employer Messages Inbox
+                            </h3>
+                            <p className="text-xs text-muted-foreground leading-relaxed">
+                              Read candidate inquiries sent to your job contact email and reply directly.
+                            </p>
+                          </div>
+                          <div className="mt-4 pt-3 border-t border-border flex items-center justify-between text-xs font-semibold text-amber-600">
+                            <span>Open Inbox</span>
+                            <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
+                          </div>
+                        </Link>
+
+                        <Link
+                          href="/jobprovider/interviews"
+                          className="p-5 rounded-2xl border border-border bg-card shadow-sm hover:shadow-md hover:border-blue-500/50 transition-all flex flex-col justify-between group"
+                        >
+                          <div className="space-y-3">
+                            <div className="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-600 flex items-center justify-center font-bold">
+                              <Calendar className="h-5 w-5" />
+                            </div>
+                            <h3 className="font-bold text-base text-foreground group-hover:text-purple-600 transition-colors">
+                              Scheduled Interviews
+                            </h3>
+                            <p className="text-xs text-muted-foreground leading-relaxed">
+                              Track upcoming in-person and video interviews scheduled with candidates.
+                            </p>
+                          </div>
+                          <div className="mt-4 pt-3 border-t border-border flex items-center justify-between text-xs font-semibold text-purple-600">
+                            <span>View Schedule</span>
+                            <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
+                          </div>
+                        </Link>
+
+                        <Link
+                          href="/jobprovider/business-profile"
+                          className="p-5 rounded-2xl border border-border bg-card shadow-sm hover:shadow-md hover:border-blue-500/50 transition-all flex flex-col justify-between group"
+                        >
+                          <div className="space-y-3">
+                            <div className="w-10 h-10 rounded-xl bg-sky-500/10 text-sky-600 flex items-center justify-center font-bold">
+                              <Building className="h-5 w-5" />
+                            </div>
+                            <h3 className="font-bold text-base text-foreground group-hover:text-sky-600 transition-colors">
+                              Business Profile
+                            </h3>
+                            <p className="text-xs text-muted-foreground leading-relaxed">
+                              Update your company name, logo, location, website, and company description.
+                            </p>
+                          </div>
+                          <div className="mt-4 pt-3 border-t border-border flex items-center justify-between text-xs font-semibold text-sky-600">
+                            <span>Edit Profile</span>
+                            <ArrowRight className="h-4 w-4 group-hover:translate-x-1 transition-transform" />
+                          </div>
+                        </Link>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        <h2 className="text-2xl font-bold text-foreground">My Job Applications & Actions</h2>
+                        <p className="text-sm text-muted-foreground">Track your applied positions, assessment links, and interview schedules.</p>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="p-6 rounded-3xl border border-border bg-card shadow-sm space-y-4 flex flex-col justify-between">
+                          <div className="space-y-3">
+                            <div className="w-12 h-12 rounded-2xl bg-blue-500/10 text-blue-600 flex items-center justify-center font-bold">
+                              <Briefcase className="h-6 w-6" />
+                            </div>
+                            <h3 className="text-lg font-bold text-foreground">My Job Applications Portal</h3>
+                            <p className="text-xs text-muted-foreground leading-relaxed">
+                              View your application timeline status (Shortlisted, Assessment Sent, Interview Scheduled) and open direct employer mail options.
+                            </p>
+                          </div>
+
+                          <Link
+                            href="/jobs/applications"
+                            className="w-full py-3 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2"
+                          >
+                            <Briefcase className="h-4 w-4" /> Open Applications Portal <ArrowRight className="h-4 w-4" />
+                          </Link>
+                        </div>
+
+                        <div className="p-6 rounded-3xl border border-border bg-card shadow-sm space-y-4 flex flex-col justify-between">
+                          <div className="space-y-3">
+                            <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center font-bold">
+                              <Sparkles className="h-6 w-6" />
+                            </div>
+                            <h3 className="text-lg font-bold text-foreground">Explore Open Opportunities</h3>
+                            <p className="text-xs text-muted-foreground leading-relaxed">
+                              Search verified job listings from local employers in Belagavi and surrounding districts. Filter by work mode, category, and salary.
+                            </p>
+                          </div>
+
+                          <Link
+                            href="/jobs"
+                            className="w-full py-3 px-4 rounded-xl border border-border bg-muted/50 hover:bg-muted text-foreground font-bold text-xs transition-all flex items-center justify-center gap-2"
+                          >
+                            <ArrowRight className="h-4 w-4 text-emerald-600" /> Browse All Job Openings
+                          </Link>
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </div>

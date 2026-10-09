@@ -2,9 +2,9 @@ const { spawn, execSync } = require("child_process");
 const os = require("os");
 const path = require("path");
 
-console.log("[CityConnect Launcher] Starting Backend Signaling Server (backend/server.js) & Frontend Next.js App...");
+console.log("[CityConnect Launcher] Starting Backend Signaling Server (backend/src/server.js) & Frontend Next.js App...");
 
-const backendProcess = spawn(process.execPath, [path.join(__dirname, "backend", "server.js")], {
+const backendProcess = spawn(process.execPath, [path.join(__dirname, "backend", "src", "server.js")], {
   cwd: __dirname,
   stdio: "inherit"
 });

@@ -13,7 +13,8 @@ export interface SendEmailResult {
   missingVars?: string[];
 }
 
-let cachedTransporter: nodemailer.Transporter | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let cachedTransporter: any = null;
 
 export function getSmtpMissingVars(): string[] {
   const missing: string[] = [];
@@ -25,7 +26,8 @@ export function getSmtpMissingVars(): string[] {
   return missing;
 }
 
-function getTransporter(): nodemailer.Transporter {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getTransporter(): any {
   if (cachedTransporter) return cachedTransporter;
 
   const missingVars = getSmtpMissingVars();
@@ -140,3 +142,141 @@ export async function sendPasswordResetOtpEmail({
     };
   }
 }
+
+export interface SendJobContactEmailParams {
+  to: string;
+  replyTo: string;
+  candidateName: string;
+  jobTitle: string;
+  subject: string;
+  body: string;
+}
+
+/**
+ * Send an email from a job candidate to the employer's contact email.
+ * Includes CRLF header injection protection, HTML escaping, and Reply-To header.
+ */
+export async function sendJobContactEmail({
+  to,
+  replyTo,
+  candidateName,
+  jobTitle,
+  subject,
+  body,
+}: SendJobContactEmailParams): Promise<SendEmailResult> {
+  const missingVars = getSmtpMissingVars();
+  if (missingVars.length > 0) {
+    console.warn(`[JOB_CONTACT_WARN] Missing SMTP config: ${missingVars.join(", ")}`);
+    return {
+      success: false,
+      error: `EMAIL_SMTP_CONFIG_MISSING: ${missingVars.join(", ")}`,
+      missingVars,
+    };
+  }
+
+  try {
+    const transporter = getTransporter();
+
+    // Strip CR/LF for header injection protection
+    const safeTo = to.replace(/[\r\n]/g, "").trim();
+    const safeReplyTo = replyTo.replace(/[\r\n]/g, "").trim();
+    const safeCandidateName = candidateName.replace(/[\r\n]/g, "").trim();
+    const safeJobTitle = jobTitle.replace(/[\r\n]/g, "").trim();
+    const safeSubject = subject.replace(/[\r\n]/g, "").trim();
+
+    const fromEmail = process.env.SMTP_FROM_EMAIL || "no-reply@belconnect.com";
+    const fromName = process.env.SMTP_FROM_NAME || "BelConnect Jobs";
+    const from = `${fromName} <${fromEmail}>`;
+
+    const escapedBody = body
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;")
+      .replace(/\n/g, "<br/>");
+
+    const info = await transporter.sendMail({
+      from,
+      to: safeTo,
+      replyTo: `${safeCandidateName} <${safeReplyTo}>`,
+      subject: `[Job Inquiry: ${safeJobTitle}] ${safeSubject}`,
+      text: `Inquiry regarding "${safeJobTitle}" from ${safeCandidateName} (${safeReplyTo}):\n\n${body}\n\n--- Reply to this email to contact the candidate directly. ---`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
+          <div style="border-bottom: 2px solid #2563eb; padding-bottom: 12px; margin-bottom: 20px;">
+            <h3 style="color: #1e293b; margin: 0;">New Candidate Inquiry: ${safeJobTitle}</h3>
+            <p style="color: #64748b; font-size: 14px; margin: 4px 0 0 0;">From: <strong>${safeCandidateName}</strong> (&lt;${safeReplyTo}&gt;)</p>
+          </div>
+          <div style="background-color: #f8fafc; border-left: 4px solid #2563eb; padding: 16px; font-size: 14px; color: #334155; line-height: 1.6; margin-bottom: 20px;">
+            ${escapedBody}
+          </div>
+          <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
+          <p style="font-size: 12px; color: #94a3b8; text-align: center; margin: 0;">You can reply directly to this email to reach <strong>${safeCandidateName}</strong>.</p>
+        </div>
+      `,
+    });
+
+    return {
+      success: true,
+      messageId: info.messageId,
+    };
+  } catch (error: any) {
+    console.error("[JOB_CONTACT_EMAIL_FAILED]", error?.message || error);
+    return {
+      success: false,
+      error: error?.message || "Failed to send job contact email",
+    };
+  }
+}
+
+export async function sendCandidateNotificationEmail({
+  to,
+  candidateName,
+  jobTitle,
+  subject,
+  message,
+}: {
+  to: string;
+  candidateName: string;
+  jobTitle: string;
+  subject: string;
+  message: string;
+}): Promise<SendEmailResult> {
+  if (process.env.JOB_EMAILS_ENABLED !== "true") {
+    return { success: false, error: "JOB_EMAILS_DISABLED" };
+  }
+
+  const missingVars = getSmtpMissingVars();
+  if (missingVars.length > 0) return { success: false, missingVars };
+
+  try {
+    const transporter = getTransporter();
+    const safeTo = to.replace(/[\r\n]/g, "").trim();
+    const safeSubject = subject.replace(/[\r\n]/g, "").trim();
+    const fromEmail = process.env.SMTP_FROM_EMAIL || "no-reply@belconnect.com";
+    const from = `BelConnect Jobs <${fromEmail}>`;
+
+    const info = await transporter.sendMail({
+      from,
+      to: safeTo,
+      subject: `[BelConnect Jobs] ${safeSubject}`,
+      text: `Hello ${candidateName},\n\nUpdate regarding your application for "${jobTitle}":\n\n${message}\n\nBest regards,\nBelConnect Team`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 12px; background-color: #ffffff;">
+          <h3 style="color: #2563eb; margin-top: 0;">Application Update: ${jobTitle}</h3>
+          <p style="color: #334155; font-size: 14px;">Hello ${candidateName},</p>
+          <div style="background-color: #f1f5f9; padding: 16px; border-radius: 8px; color: #1e293b; font-size: 14px; margin: 16px 0;">
+            ${message}
+          </div>
+          <p style="color: #64748b; font-size: 13px;">View your application status on <a href="${process.env.NEXT_PUBLIC_APP_URL || ''}/jobs/applications">BelConnect My Applications</a>.</p>
+        </div>
+      `,
+    });
+    return { success: true, messageId: info.messageId };
+  } catch (error: any) {
+    console.error("[CANDIDATE_NOTIFICATION_EMAIL_FAILED]", error?.message || error);
+    return { success: false, error: error?.message };
+  }
+}
+

@@ -30,7 +30,7 @@ export async function GET(request: Request) {
         j.salary_text,
         j.status,
         j.deadline,
-        COALESCE(bp.company_name, jp.name, 'BelConnect Partner') AS company_name,
+        COALESCE(NULLIF(TRIM(bp.company_name), ''), NULLIF(TRIM(jp.name), ''), 'Company Profile Pending') AS company_name,
         bp.logo_url AS company_logo
       FROM job_saved_jobs sj
       JOIN jobs j ON sj.job_id = j.id

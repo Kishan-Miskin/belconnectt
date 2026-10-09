@@ -1,24 +1,19 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { motion, AnimatePresence } from "framer-motion";
 import {
   Search,
   MapPin,
   Briefcase,
   Clock,
-  IndianRupee,
   Building2,
   Filter,
-  ArrowRight,
   Sparkles,
-  Users,
   ChevronRight,
   CheckCircle2,
-  Layers,
-  Calendar,
+  Loader2,
 } from "lucide-react";
 import { useTranslation } from "@/lib/i18n";
 import { useAuthStore } from "@/store/useAuthStore";
@@ -43,6 +38,7 @@ interface JobItem {
   status: string;
   views_count: number;
   is_boosted: boolean;
+  published_at: string | null;
   created_at: string;
   company_name: string;
   company_logo: string | null;
@@ -57,14 +53,19 @@ export default function JobsPage() {
 
   const [jobs, setJobs] = useState<JobItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [totalCount, setTotalCount] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [selectedType, setSelectedType] = useState<string>("all");
   const [selectedWorkMode, setSelectedWorkMode] = useState<string>("all");
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [selectedLocation, setSelectedLocation] = useState<string>("all");
+
+  const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const jobTypes = ["all", "Full-time", "Part-time", "Contract", "Internship"];
   const workModes = ["all", "On-site", "Remote", "Hybrid"];
@@ -93,36 +94,60 @@ export default function JobsPage() {
     "Dharwad",
   ];
 
+  // 300 ms Debounce for search query input
   useEffect(() => {
-    fetchJobs();
-  }, [selectedType, selectedWorkMode, selectedCategory, selectedLocation]);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      setDebouncedQuery(searchQuery.trim());
+    }, 300);
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    };
+  }, [searchQuery]);
 
-  const fetchJobs = async () => {
-    setLoading(true);
+  useEffect(() => {
+    fetchJobs(true);
+  }, [debouncedQuery, selectedType, selectedWorkMode, selectedCategory, selectedLocation]);
+
+  const fetchJobs = async (reset = false) => {
+    if (reset) {
+      setLoading(true);
+    } else {
+      setLoadingMore(true);
+    }
+
     try {
       const params = new URLSearchParams();
-      if (searchQuery.trim()) params.append("q", searchQuery.trim());
+      if (debouncedQuery) params.append("q", debouncedQuery);
       if (selectedType !== "all") params.append("job_type", selectedType);
       if (selectedWorkMode !== "all") params.append("work_mode", selectedWorkMode);
       if (selectedCategory !== "all") params.append("category", selectedCategory);
       if (selectedLocation !== "all") params.append("location", selectedLocation);
+      params.append("limit", "20");
+
+      if (!reset && nextCursor) {
+        params.append("cursor", nextCursor);
+      }
 
       const res = await fetch(`/api/jobs?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
-        setJobs(data.jobs || []);
-        setTotalCount(data.total || 0);
+        const newJobs = data.jobs || [];
+        setHasMore(data.hasMore || false);
+        setNextCursor(data.nextCursor || null);
+
+        if (reset) {
+          setJobs(newJobs);
+        } else {
+          setJobs((prev) => [...prev, ...newJobs]);
+        }
       }
     } catch (err) {
       console.error("Error fetching jobs:", err);
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
-  };
-
-  const handleSearchSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    fetchJobs();
   };
 
   const formatSalary = (job: JobItem) => {
@@ -145,7 +170,7 @@ export default function JobsPage() {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-muted/10 text-foreground pb-20">
-      {/* ── Hero Search Banner ────────────────────────────────────────── */}
+      {/* Hero Search Banner */}
       <section className="relative overflow-hidden bg-gradient-to-b from-blue-900 via-blue-950 to-slate-900 text-white pt-12 pb-16 px-4 sm:px-6 lg:px-8 border-b border-blue-900/40">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-blue-500/20 via-transparent to-transparent pointer-events-none" />
 
@@ -163,15 +188,12 @@ export default function JobsPage() {
           </p>
 
           {/* Search Bar Container */}
-          <form
-            onSubmit={handleSearchSubmit}
-            className="mt-6 flex flex-col sm:flex-row items-stretch gap-2 bg-white/10 dark:bg-black/30 backdrop-blur-md p-2 rounded-2xl border border-white/20 shadow-2xl max-w-3xl mx-auto"
-          >
+          <div className="mt-6 flex flex-col sm:flex-row items-stretch gap-2 bg-white/10 dark:bg-black/30 backdrop-blur-md p-2 rounded-2xl border border-white/20 shadow-2xl max-w-3xl mx-auto">
             <div className="flex-1 flex items-center gap-3 px-3 py-2 bg-white dark:bg-card rounded-xl text-foreground">
               <Search className="h-5 w-5 text-muted-foreground shrink-0" />
               <input
                 type="text"
-                placeholder="Search job title, skills, or company..."
+                placeholder="Search job title, skills, or company (auto-searches)..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full bg-transparent text-sm focus:outline-none placeholder:text-muted-foreground/70"
@@ -192,14 +214,7 @@ export default function JobsPage() {
                 ))}
               </select>
             </div>
-
-            <button
-              type="submit"
-              className="px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm shadow-md transition-all shrink-0 flex items-center justify-center gap-2"
-            >
-              Search Jobs
-            </button>
-          </form>
+          </div>
 
           {/* Quick Categories Bar */}
           <div className="pt-2 flex flex-wrap items-center justify-center gap-1.5 max-w-3xl mx-auto">
@@ -221,10 +236,10 @@ export default function JobsPage() {
         </div>
       </section>
 
-      {/* ── Main Content Grid ─────────────────────────────────────────── */}
+      {/* Main Content Grid */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8">
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-          {/* ── Left Sidebar Filters ────────────────────────────────────── */}
+          {/* Left Sidebar Filters */}
           <aside className="lg:col-span-1 space-y-6">
             <div className="bg-white dark:bg-card border border-border rounded-2xl p-5 shadow-sm space-y-6">
               <div className="flex items-center justify-between pb-3 border-b border-border">
@@ -331,11 +346,11 @@ export default function JobsPage() {
             </div>
           </aside>
 
-          {/* ── Main Job Listings Column ─────────────────────────────────── */}
+          {/* Main Job Listings Column */}
           <main className="lg:col-span-3 space-y-4">
             <div className="flex items-center justify-between pb-2">
               <p className="text-xs sm:text-sm font-semibold text-muted-foreground">
-                Showing <span className="text-foreground font-bold">{jobs.length}</span> of {totalCount} open positions
+                Showing <span className="text-foreground font-bold">{jobs.length}</span> positions
               </p>
             </div>
 
@@ -362,7 +377,7 @@ export default function JobsPage() {
                 <div className="space-y-1">
                   <h3 className="text-lg font-bold text-foreground">No matching jobs found</h3>
                   <p className="text-xs sm:text-sm text-muted-foreground max-w-sm mx-auto">
-                    Try adjusting your search query, clearing filters, or checking back soon for new local postings.
+                    Try adjusting your search query or clearing filters to see more local opportunities.
                   </p>
                 </div>
                 <button
@@ -419,7 +434,6 @@ export default function JobsPage() {
                             {job.title}
                           </h3>
 
-                          {/* Pills row */}
                           <div className="flex flex-wrap items-center gap-1.5 pt-1">
                             <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-500/10 text-blue-600 border border-blue-500/20">
                               {job.job_type}
@@ -462,6 +476,25 @@ export default function JobsPage() {
                     </div>
                   </div>
                 ))}
+
+                {/* Load More Button */}
+                {hasMore && (
+                  <div className="pt-4 text-center">
+                    <button
+                      onClick={() => fetchJobs(false)}
+                      disabled={loadingMore}
+                      className="px-8 py-3 rounded-2xl border border-border bg-white dark:bg-card text-foreground font-bold text-xs shadow-sm hover:bg-muted transition-all inline-flex items-center gap-2"
+                    >
+                      {loadingMore ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" /> Loading more jobs…
+                        </>
+                      ) : (
+                        "Load More Jobs"
+                      )}
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </main>

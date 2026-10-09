@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
-import { query } from "@/lib/db";
+import { revalidateTag } from "next/cache";
+import { query, isDatabaseUnavailableError } from "@/lib/db";
 import { getAuthenticatedUser } from "@/lib/jwt";
+
 
 // ── GET /api/jobs/[id] — Public Job Detail View ──────────────────────────
 export async function GET(
@@ -43,7 +45,7 @@ export async function GET(
         j.is_boosted,
         j.created_at,
         j.updated_at,
-        COALESCE(bp.company_name, jp.name, 'BelConnect Partner') AS company_name,
+        COALESCE(NULLIF(TRIM(bp.company_name), ''), NULLIF(TRIM(jp.name), ''), 'Company Profile Pending') AS company_name,
         bp.industry AS company_industry,
         bp.company_size,
         bp.city AS company_city,
@@ -255,9 +257,17 @@ export async function PATCH(
     `;
 
     const updateRes = await query(updateSql, values);
+    try {
+      revalidateTag("jobs-feed", "max");
+    } catch {
+      // Ignore cache error
+    }
     return NextResponse.json({ success: true, job: updateRes.rows[0] });
   } catch (error: any) {
     console.error("PATCH /api/jobs/[id] error:", error);
+    if (isDatabaseUnavailableError(error)) {
+      return NextResponse.json({ error: "Database temporarily unavailable" }, { status: 503 });
+    }
     return NextResponse.json(
       { error: "Failed to update job" },
       { status: 500 }
@@ -302,13 +312,22 @@ export async function DELETE(
     }
 
     await query(`DELETE FROM jobs WHERE id = $1`, [id]);
+    try {
+      revalidateTag("jobs-feed", "max");
+    } catch {
+      // Ignore cache error
+    }
 
     return NextResponse.json({ success: true, message: "Job deleted successfully" });
   } catch (error: any) {
     console.error("DELETE /api/jobs/[id] error:", error);
+    if (isDatabaseUnavailableError(error)) {
+      return NextResponse.json({ error: "Database temporarily unavailable" }, { status: 503 });
+    }
     return NextResponse.json(
       { error: "Failed to delete job" },
       { status: 500 }
     );
   }
 }
+

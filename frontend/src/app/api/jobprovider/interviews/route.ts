@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
-import { query } from "@/lib/db";
+import { query, getClient, isDatabaseUnavailableError } from "@/lib/db";
 import { getAuthenticatedUser } from "@/lib/jwt";
+import { parseAndValidate, scheduleInterviewSchema } from "@/lib/validations";
+import crypto from "crypto";
 
-// ── GET /api/jobprovider/interviews — List Interviews for Employer ────────
+// ── GET /api/jobprovider/interviews — List Employer Interviews ───────────
 export async function GET(request: Request) {
   try {
     const authUser = getAuthenticatedUser(request);
@@ -60,6 +62,9 @@ export async function GET(request: Request) {
     return NextResponse.json({ interviews: res.rows });
   } catch (error: any) {
     console.error("GET /api/jobprovider/interviews error:", error);
+    if (isDatabaseUnavailableError(error)) {
+      return NextResponse.json({ error: "Database temporarily unavailable" }, { status: 503 });
+    }
     return NextResponse.json(
       { error: "Failed to fetch interviews" },
       { status: 500 }
@@ -85,27 +90,22 @@ export async function POST(request: Request) {
       );
     }
 
-    const body = await request.json();
+    const validation = await parseAndValidate(request, scheduleInterviewSchema);
+    if (validation.response) return validation.response;
+
     const {
       applicationId,
       interviewDate,
       interviewTime,
-      interviewMode = "Video",
+      interviewMode = "In-person",
       meetingLink = "",
       locationDetails = "",
       notes = "",
-    } = body;
-
-    if (!applicationId || !interviewDate || !interviewTime) {
-      return NextResponse.json(
-        { error: "Application ID, interview date, and time are required" },
-        { status: 400 }
-      );
-    }
+    } = validation.data;
 
     // Verify application and job ownership
     const appSql = `
-      SELECT ja.id, ja.job_id, ja.candidate_id, ja.candidate_name, ja.status, j.title, j.job_provider_id
+      SELECT ja.id, ja.job_id, ja.candidate_id, ja.candidate_name, ja.status AS current_status, j.title, j.job_provider_id
       FROM job_applications ja
       JOIN jobs j ON ja.job_id = j.id
       WHERE ja.id = $1
@@ -124,63 +124,103 @@ export async function POST(request: Request) {
       );
     }
 
-    const interviewId = `int_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const client = await getClient();
+    try {
+      await client.query("BEGIN");
 
-    const insertSql = `
-      INSERT INTO job_interviews (
-        id,
-        job_id,
-        application_id,
-        job_provider_id,
-        candidate_id,
-        candidate_name,
-        job_title,
-        interview_date,
-        interview_time,
-        interview_mode,
-        meeting_link,
-        location_details,
-        status,
-        notes,
-        created_at,
-        updated_at
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'scheduled', $13, NOW(), NOW()
-      )
-      RETURNING *;
-    `;
+      const interviewId = `int_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
 
-    const interviewRes = await query(insertSql, [
-      interviewId,
-      app.job_id,
-      applicationId,
-      authUser.userId,
-      app.candidate_id,
-      app.candidate_name,
-      app.title,
-      interviewDate,
-      interviewTime,
-      interviewMode,
-      meetingLink?.trim() || null,
-      locationDetails?.trim() || null,
-      notes?.trim() || null,
-    ]);
+      const insertSql = `
+        INSERT INTO job_interviews (
+          id,
+          job_id,
+          application_id,
+          job_provider_id,
+          candidate_id,
+          candidate_name,
+          job_title,
+          interview_date,
+          interview_time,
+          interview_mode,
+          meeting_link,
+          location_details,
+          status,
+          notes,
+          created_at,
+          updated_at
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'scheduled', $13, NOW(), NOW()
+        )
+        RETURNING *;
+      `;
 
-    // Automatically update candidate status to shortlisted if new/reviewed
-    if (app.status === "new" || app.status === "reviewed") {
-      await query(
-        `UPDATE job_applications SET status = 'shortlisted', updated_at = NOW() WHERE id = $1`,
+      const interviewRes = await client.query(insertSql, [
+        interviewId,
+        app.job_id,
+        applicationId,
+        authUser.userId,
+        app.candidate_id,
+        app.candidate_name,
+        app.title,
+        interviewDate,
+        interviewTime,
+        interviewMode,
+        meetingLink?.trim() || null,
+        locationDetails?.trim() || null,
+        notes?.trim() || null,
+      ]);
+
+      // Automatically update candidate status to interview_scheduled
+      await client.query(
+        `UPDATE job_applications SET status = 'interview_scheduled', status_updated_at = NOW(), updated_at = NOW() WHERE id = $1`,
         [applicationId]
       );
-    }
 
-    return NextResponse.json({
-      success: true,
-      interview: interviewRes.rows[0],
-      message: "Interview scheduled successfully",
-    }, { status: 201 });
+      // Audit event
+      await client.query(
+        `INSERT INTO job_application_events (
+          application_id, actor_id, actor_role, event_type, from_status, to_status, meta, created_at
+        ) VALUES ($1, $2, $3, 'interview_scheduled', $4, 'interview_scheduled', $5, NOW())`,
+        [
+          applicationId,
+          authUser.userId,
+          "job_provider",
+          app.current_status,
+          JSON.stringify({ interviewDate, interviewTime, interviewMode, meetingLink, locationDetails }),
+        ]
+      );
+
+      // In-app Notification for Candidate
+      const notifId = `notif_${Date.now()}_${crypto.randomBytes(3).toString("hex")}`;
+      await client.query(
+        `INSERT INTO notifications (id, user_id, type, title, body, created_at)
+         VALUES ($1, $2, 'job_interview', $3, $4, NOW())`,
+        [
+          notifId,
+          app.candidate_id,
+          `Interview Scheduled: ${app.title}`,
+          `An interview has been scheduled for your application to "${app.title}" on ${interviewDate} at ${interviewTime} (${interviewMode}).`,
+        ]
+      );
+
+      await client.query("COMMIT");
+
+      return NextResponse.json({
+        success: true,
+        interview: interviewRes.rows[0],
+        message: "Interview scheduled successfully",
+      }, { status: 201 });
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
   } catch (error: any) {
     console.error("POST /api/jobprovider/interviews error:", error);
+    if (isDatabaseUnavailableError(error)) {
+      return NextResponse.json({ error: "Database temporarily unavailable" }, { status: 503 });
+    }
     return NextResponse.json(
       { error: "Failed to schedule interview" },
       { status: 500 }
@@ -200,7 +240,7 @@ export async function PATCH(request: Request) {
     }
 
     const body = await request.json();
-    const { interviewId, status, meetingLink, notes } = body;
+    const { interviewId, status, meetingLink, locationDetails, notes } = body;
 
     if (!interviewId || !status) {
       return NextResponse.json(
@@ -209,7 +249,6 @@ export async function PATCH(request: Request) {
       );
     }
 
-    // Check ownership
     const checkRes = await query(
       `SELECT id, job_provider_id FROM job_interviews WHERE id = $1 LIMIT 1`,
       [interviewId]
@@ -232,6 +271,10 @@ export async function PATCH(request: Request) {
       values.push(meetingLink);
       updates.push(`meeting_link = $${values.length}`);
     }
+    if (locationDetails !== undefined) {
+      values.push(locationDetails);
+      updates.push(`location_details = $${values.length}`);
+    }
     if (notes !== undefined) {
       values.push(notes);
       updates.push(`notes = $${values.length}`);
@@ -252,6 +295,9 @@ export async function PATCH(request: Request) {
     });
   } catch (error: any) {
     console.error("PATCH /api/jobprovider/interviews error:", error);
+    if (isDatabaseUnavailableError(error)) {
+      return NextResponse.json({ error: "Database temporarily unavailable" }, { status: 503 });
+    }
     return NextResponse.json(
       { error: "Failed to update interview" },
       { status: 500 }
