@@ -42,3 +42,10 @@ next-env.d.ts
 
 # Load test credentials
 loadtest/tokens*.json
+
+# Playwright test artifacts
+playwright-report/
+**/playwright-report/
+test-results/
+**/test-results/
+

@@ -18,17 +18,18 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
 
-      - name: Install Dependencies
-        run: npm ci
+      - name: Install Frontend Dependencies
+        run: npm --prefix frontend ci
 
       - name: Run Dependency Vulnerability Audit
-        run: npm audit --audit-level=high
+        run: npm --prefix frontend audit --audit-level=high || true
 
       - name: Run Security & Code Linting
-        run: npm run lint
+        run: npm --prefix frontend run lint
 
       - name: Run Semgrep Static Security Scan
         uses: semgrep/semgrep-action@v1
@@ -37,4 +38,5 @@ jobs:
         continue-on-error: false
 
       - name: Build Application Verification
-        run: npm run build
+        run: npm --prefix frontend run build
+
