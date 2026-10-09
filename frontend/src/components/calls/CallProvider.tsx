@@ -47,8 +47,8 @@ export const useCallContext = () => useContext(CallContext);
 function resolveSignalingUrl(): string | null {
   const envUrl = process.env.NEXT_PUBLIC_SIGNALING_URL?.trim();
 
-  // If environment variable is explicitly set to a non-localhost remote URL, honor it
-  if (envUrl && !envUrl.includes("localhost") && !envUrl.includes("127.0.0.1")) {
+  // If environment variable is explicitly set to a non-localhost remote URL, honor it (excluding Vercel serverless URLs)
+  if (envUrl && !envUrl.includes("localhost") && !envUrl.includes("127.0.0.1") && !envUrl.includes("vercel.app")) {
     return envUrl;
   }
 

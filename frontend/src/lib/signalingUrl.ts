@@ -15,8 +15,8 @@ export function getSignalingUrl(): string {
     while (cleaned.endsWith("/")) {
       cleaned = cleaned.slice(0, -1);
     }
-    // If it's a remote URL (not localhost), honor it directly
-    if (cleaned && !cleaned.includes("localhost") && !cleaned.includes("127.0.0.1")) {
+    // If it's a remote URL (not localhost and not Vercel, which doesn't support WebSockets), honor it directly
+    if (cleaned && !cleaned.includes("localhost") && !cleaned.includes("127.0.0.1") && !cleaned.includes("vercel.app")) {
       return cleaned;
     }
   }
