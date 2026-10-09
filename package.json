@@ -6,6 +6,9 @@
     "dev": "node dev.js",
     "dev:frontend": "npm --prefix frontend run dev",
     "dev:backend": "npm --prefix backend run dev",
-    "build:frontend": "npm --prefix frontend run build"
+    "build:frontend": "npm --prefix frontend run build",
+    "test:e2e": "cd frontend && npx playwright test",
+    "test:e2e:ui": "cd frontend && npx playwright test --ui",
+    "test:e2e:report": "cd frontend && npx playwright show-report"
   }
 }
